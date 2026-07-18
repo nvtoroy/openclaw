@@ -86,6 +86,7 @@ export async function runPreparedEmbeddedLoop(
     markStartupStage: (stage) => startupStages.mark(stage),
     notifyExecutionPhase,
     fallbackConfigured,
+    preparedModelRuntime: input.preparedModelRuntime,
   });
   provider = preparedRuntime.provider;
   modelId = preparedRuntime.modelId;
