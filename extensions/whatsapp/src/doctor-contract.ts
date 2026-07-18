@@ -18,8 +18,51 @@ const streamingAliasMigration = defineChannelAliasMigration({
   streaming: { defaultMode: "partial", deliveryOnly: true },
 });
 
-export const legacyConfigRules: ChannelDoctorLegacyConfigRule[] =
-  streamingAliasMigration.legacyConfigRules;
+const hasExposeErrorText = (value: unknown): boolean =>
+  Object.hasOwn(asObjectRecord(value) ?? {}, "exposeErrorText");
+
+export const legacyConfigRules: ChannelDoctorLegacyConfigRule[] = [
+  ...streamingAliasMigration.legacyConfigRules,
+  {
+    path: ["channels", "whatsapp", "exposeErrorText"],
+    message:
+      'channels.whatsapp.exposeErrorText is retired and ignored. Run "openclaw doctor --fix".',
+  },
+  {
+    path: ["channels", "whatsapp", "accounts"],
+    message:
+      'channels.whatsapp.accounts.<id>.exposeErrorText is retired and ignored. Run "openclaw doctor --fix".',
+    match: (value) => Object.values(asObjectRecord(value) ?? {}).some(hasExposeErrorText),
+  },
+];
+
+function removeExposeErrorText(cfg: OpenClawConfig, changes: string[]): OpenClawConfig {
+  const channels = cfg.channels as Record<string, unknown> | undefined;
+  const entry = asObjectRecord(channels?.whatsapp);
+  if (!entry) return cfg;
+  let changed = false;
+  const next = { ...entry };
+  if (Object.hasOwn(next, "exposeErrorText")) {
+    delete next.exposeErrorText;
+    changes.push("Removed retired channels.whatsapp.exposeErrorText.");
+    changed = true;
+  }
+  const accounts = asObjectRecord(next.accounts);
+  if (accounts) {
+    const nextAccounts = { ...accounts };
+    for (const [id, value] of Object.entries(accounts)) {
+      const account = asObjectRecord(value);
+      if (!account || !Object.hasOwn(account, "exposeErrorText")) continue;
+      const cleaned = { ...account };
+      delete cleaned.exposeErrorText;
+      nextAccounts[id] = cleaned;
+      changes.push(`Removed retired channels.whatsapp.accounts.${id}.exposeErrorText.`);
+      changed = true;
+    }
+    next.accounts = nextAccounts;
+  }
+  return changed ? ({ ...cfg, channels: { ...channels, whatsapp: next } } as OpenClawConfig) : cfg;
+}
 
 /** Deep-fills fields missing from target with copies of source values. */
 function fillMissingStreamingFields(
@@ -128,8 +171,9 @@ export function normalizeCompatibilityConfig({
   cfg: OpenClawConfig;
 }): ChannelDoctorConfigMutation {
   const ackReaction = normalizeAckReactionConfig({ cfg });
+  const retiredConfig = removeExposeErrorText(ackReaction.config, ackReaction.changes);
   const accountsBefore = asObjectRecord(
-    asObjectRecord((ackReaction.config.channels as Record<string, unknown> | undefined)?.whatsapp)
+    asObjectRecord((retiredConfig.channels as Record<string, unknown> | undefined)?.whatsapp)
       ?.accounts,
   );
   const accountsWithoutStreamingBefore = new Set(
@@ -138,7 +182,7 @@ export function normalizeCompatibilityConfig({
       .map(([accountId]) => accountId),
   );
   const aliases = streamingAliasMigration.normalizeChannelConfig({
-    cfg: ackReaction.config,
+    cfg: retiredConfig,
     changes: ackReaction.changes,
   });
   return {
