@@ -243,6 +243,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
           oneShotCliRun: attempt.oneShotCliRun,
           toolSearchCatalogRef,
           agentDir: params.agentDir,
+          preparedModelRuntime: attempt.preparedModelRuntime,
           cwd: params.effectiveCwd,
           workspaceDir: params.effectiveWorkspace,
           spawnWorkspaceDir,

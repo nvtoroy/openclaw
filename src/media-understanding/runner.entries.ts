@@ -790,6 +790,7 @@ export async function runProviderEntry(params: {
   ctx: MsgContext;
   attachmentIndex: number;
   cache: MediaAttachmentCache;
+  agentId?: string;
   agentDir?: string;
   workspaceDir?: string;
   providerRegistry: ProviderRegistry;
@@ -845,6 +846,7 @@ export async function runProviderEntry(params: {
       timeoutMs,
       profile: entry.profile,
       preferredProfile: entry.preferredProfile,
+      agentId: params.agentId,
       agentDir: params.agentDir,
       workspaceDir: params.workspaceDir,
       cfg: params.cfg,

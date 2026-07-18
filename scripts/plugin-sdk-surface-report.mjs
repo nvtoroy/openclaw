@@ -280,7 +280,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: AgentThinkingLevel shared by default-turn and compaction config.
       // +9: shared ingress monitor factory and lifecycle/result contracts across
       // channel-outbound and its two deprecated compatibility barrels.
-      8177,
+      // +2: lifecycle-owned prepared model catalog sync and async readers.
+      8179,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -325,7 +326,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: bounded raw transcript cursor reader.
       // +1: bounded visible transcript cursor reader.
       // +3: shared ingress monitor factory across channel-outbound and compat mirrors.
-      4546,
+      // +2: lifecycle-owned prepared model catalog sync and async readers.
+      4548,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -347,7 +349,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: AgentModelPolicyConfig mirrored by deprecated config-types.
       // +6: ingress monitor lifecycle/result contracts through deprecated channel barrels.
       // +1: AgentThinkingLevel mirrored by deprecated config-types.
-      3013,
+      // +1: lifecycle-owned prepared model catalog contract mirrored by agent-runtime compat.
+      3014,
       env,
     ),
     publicWildcardReexports: readPluginSdkSurfaceBudgetEnv(
