@@ -25,7 +25,7 @@ import {
   cronCapabilityChange,
   mcpCapabilityChange,
   packageCapabilityChange,
-  pushAgentCapabilityChanges,
+  pushResolvedAgentCapabilityChanges,
   type ClawUpdateCapabilityChange,
 } from "./update-capability-changes.js";
 import { makeEmptyClawUpdatePlan } from "./update-plan-empty.js";
@@ -75,7 +75,10 @@ export async function buildClawUpdatePlan(params: {
   config: OpenClawConfig;
   sourceMcpServers: Record<string, Record<string, unknown>>;
   stateOptions?: OpenClawStateDatabaseOptions & { packageDeps?: PackageRemovalDeps };
-  packagePreflight?: (pkg: ClawPackage) => Promise<{
+  packagePreflight?: (
+    pkg: ClawPackage,
+    workspaceDir: string,
+  ) => Promise<{
     ok: boolean;
     action?: "install" | "reuse";
     code?: string;
@@ -212,7 +215,7 @@ export async function buildClawUpdatePlan(params: {
         workspace: record.install.workspace,
         packagePreflight: async (pkg) => {
           const result = params.packagePreflight
-            ? await params.packagePreflight(pkg)
+            ? await params.packagePreflight(pkg, record.install.workspace)
             : {
                 ok: false,
                 code: "package_install_unavailable",
@@ -258,10 +261,10 @@ export async function buildClawUpdatePlan(params: {
       currentDigest: record.install.agentConfigDigest,
       desiredDigest: desiredAgentDigest,
     });
-    pushAgentCapabilityChanges({
+    pushResolvedAgentCapabilityChanges({
       changes: capabilityChanges,
       agentId,
-      currentAgent: params.config.agents?.list?.find((agent) => agent.id === agentId),
+      config: params.config,
       desiredAgent: targetPlan.agent.config,
     });
 
@@ -384,12 +387,14 @@ export async function buildClawUpdatePlan(params: {
       const preflight = packagePreflights.get(key);
       const requiresPackageMutation =
         !current ||
-        (current.ownership === "claw-installed" &&
+        (current.origin === "claw-introduced" &&
+          !current.independentOwner &&
           (current.state === "missing" || current.version !== target.version));
       const expectedOwnedPluginUpgradeConflict =
         target.kind === "plugin" &&
         current?.state === "present" &&
-        current.ownership === "claw-installed" &&
+        current.origin === "claw-introduced" &&
+        !current.independentOwner &&
         current.version !== target.version &&
         preflight?.code === "plugin_version_conflict" &&
         preflight.installedVersion === current.version;
@@ -409,7 +414,7 @@ export async function buildClawUpdatePlan(params: {
         current && ["modified", "ambiguous", "incomplete"].includes(current.state);
       const independentlyOwnedMutation =
         current &&
-        current.ownership !== "claw-installed" &&
+        (current.origin === "pre-existing" || current.independentOwner) &&
         (current.state === "missing" || current.version !== target.version);
       const action =
         conflictingPluginPin ||
@@ -451,6 +456,7 @@ export async function buildClawUpdatePlan(params: {
         pkg: target,
         action,
         currentVersion: current?.version,
+        desiredVersion: target.version,
       });
       if (capabilityChange) {
         capabilityChanges.push(capabilityChange);
@@ -468,8 +474,12 @@ export async function buildClawUpdatePlan(params: {
     }
     for (const [key, current] of currentPackages) {
       if (!targetPackages.has(key)) {
-        const manual = current.state === "incomplete";
-        const action = manual ? "manual" : "remove";
+        const manual = current.state !== "present";
+        const action = manual
+          ? "manual"
+          : current.relationship === "managed" && !current.independentOwner
+            ? "remove"
+            : "release";
         actions.push({
           kind: "package",
           id: key,
@@ -478,7 +488,9 @@ export async function buildClawUpdatePlan(params: {
           blocked: manual,
           reason: manual
             ? `Target removes this package, but current lifecycle state is ${current.state}.`
-            : "Target manifest removes this Claw package reference without implying shared uninstall.",
+            : action === "release"
+              ? "Target manifest releases this referenced package while preserving the shared artifact."
+              : "Target manifest removes this managed package reference; apply may remove the unchanged artifact when it is otherwise unused.",
           currentDigest: digest(current),
         });
         const capabilityChange = packageCapabilityChange({
@@ -504,7 +516,8 @@ export async function buildClawUpdatePlan(params: {
           (candidate) => candidate.agentId !== agentId,
         );
       const independentlyOwnedMutation =
-        current?.ownership === "independently-owned" &&
+        current !== undefined &&
+        (current.origin === "pre-existing" || current.independentOwner) &&
         (current.configDigest !== desiredDigest || current.state !== "present");
       const sharedChange = sharedWithOtherClaws && current?.configDigest !== desiredDigest;
       const action =
@@ -553,7 +566,9 @@ export async function buildClawUpdatePlan(params: {
       }
       const manual = current.state === "pending" || current.state === "failed";
       const sharedOrIndependent =
-        current.ownership === "independently-owned" ||
+        current.relationship === "referenced" ||
+        current.origin === "pre-existing" ||
+        current.independentOwner ||
         readClawMcpServerRefsByName(current.name, readOnlyStateOptions).some(
           (candidate) => candidate.agentId !== agentId,
         );

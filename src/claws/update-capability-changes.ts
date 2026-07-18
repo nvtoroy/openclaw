@@ -1,5 +1,15 @@
 // Builds field-level capability change summaries for Claw update previews.
+import { createHash } from "node:crypto";
+import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
 import { stableStringify } from "../agents/stable-stringify.js";
+import { parseDurationMs } from "../cli/parse-duration.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveHeartbeatSummaryForAgent } from "../infra/heartbeat-summary.js";
+
+type ClawUpdateCapabilityValue = {
+  summary: string;
+  digest: string;
+};
 
 export type ClawUpdateCapabilityChange = {
   kind: "agent" | "package" | "mcpServer" | "cronJob";
@@ -9,9 +19,16 @@ export type ClawUpdateCapabilityChange = {
   classification: "escalation" | "reduction" | "neutral";
   requiresDistinctConsent: boolean;
   reason: string;
-  current?: unknown;
-  desired?: unknown;
+  current?: ClawUpdateCapabilityValue;
+  desired?: ClawUpdateCapabilityValue;
 };
+
+function capabilityValue(summary: string): ClawUpdateCapabilityValue {
+  return {
+    summary,
+    digest: `sha256:${createHash("sha256").update(stableStringify(summary)).digest("hex")}`,
+  };
+}
 
 function getPath(value: unknown, path: readonly string[]): unknown {
   let current = value;
@@ -28,33 +45,146 @@ function sameValue(left: unknown, right: unknown): boolean {
   return stableStringify(left) === stableStringify(right);
 }
 
+function summarizeAgentCapability(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+    ? String(value)
+    : stableStringify(value);
+}
+
 function rankedValue(value: unknown, rank: Record<string, number>): number {
   return typeof value === "string" ? (rank[value] ?? 0) : 0;
 }
 
-function isAgentEscalation(path: string, current: unknown, desired: unknown): boolean {
-  if (desired === undefined || sameValue(current, desired)) {
-    return false;
+function compareRankedCapability(
+  current: unknown,
+  desired: unknown,
+  rank: Record<string, number>,
+): ClawUpdateCapabilityChange["classification"] {
+  const currentRank = rankedValue(current, rank);
+  const desiredRank = rankedValue(desired, rank);
+  return desiredRank > currentRank
+    ? "escalation"
+    : desiredRank < currentRank
+      ? "reduction"
+      : "neutral";
+}
+
+function classifyHeartbeatEvery(
+  current: unknown,
+  desired: unknown,
+): ClawUpdateCapabilityChange["classification"] {
+  const toInterval = (value: unknown): number | undefined => {
+    if (value === "disabled") {
+      return 0;
+    }
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    try {
+      return Math.max(0, parseDurationMs(value, { defaultUnit: "m" }));
+    } catch {
+      return undefined;
+    }
+  };
+  const currentMs = toInterval(current);
+  const desiredMs = toInterval(desired);
+  if (currentMs === undefined || desiredMs === undefined || currentMs === desiredMs) {
+    return "neutral";
+  }
+  if (currentMs === 0) {
+    return "escalation";
+  }
+  if (desiredMs === 0) {
+    return "reduction";
+  }
+  return desiredMs < currentMs ? "escalation" : "reduction";
+}
+
+function classifyAgentCapability(
+  path: string,
+  current: unknown,
+  desired: unknown,
+  currentAgentExists: boolean,
+): ClawUpdateCapabilityChange["classification"] {
+  if (path === "tools.allow" || path === "tools.deny") {
+    if (!currentAgentExists && desired !== undefined) {
+      return "escalation";
+    }
+    if (desired === undefined) {
+      return "escalation";
+    }
+    if (current === undefined) {
+      return "reduction";
+    }
+  }
+  if (desired === undefined) {
+    return "reduction";
+  }
+  if (current === undefined) {
+    return "escalation";
   }
   if (path === "sandbox.workspaceAccess") {
     const rank = { none: 0, ro: 1, rw: 2 } as Record<string, number>;
-    return rankedValue(desired, rank) > rankedValue(current, rank);
+    return compareRankedCapability(current, desired, rank);
   }
   if (path === "sandbox.mode") {
-    const rank = { off: 0, "non-main": 1, all: 2 } as Record<string, number>;
-    return rankedValue(desired, rank) > rankedValue(current, rank);
+    const rank = { all: 0, "non-main": 1, off: 2 } as Record<string, number>;
+    return compareRankedCapability(current, desired, rank);
+  }
+  if (path === "sandbox.scope") {
+    const rank = { session: 0, agent: 1, shared: 2 } as Record<string, number>;
+    return compareRankedCapability(current, desired, rank);
+  }
+  if (path === "heartbeat.every") {
+    return classifyHeartbeatEvery(current, desired);
+  }
+  if (path === "heartbeat.isolatedSession" || path === "heartbeat.skipWhenBusy") {
+    return desired === true ? "reduction" : "escalation";
+  }
+  if (path === "heartbeat.timeoutSeconds") {
+    return typeof current === "number" && typeof desired === "number" && desired < current
+      ? "reduction"
+      : "escalation";
   }
   if (path === "tools.deny") {
-    return Array.isArray(current) && Array.isArray(desired) && desired.length < current.length;
+    if (!Array.isArray(current) || !Array.isArray(desired)) {
+      return "escalation";
+    }
+    const desiredTools = new Set(
+      desired.filter((value): value is string => typeof value === "string"),
+    );
+    if (current.some((value) => typeof value === "string" && !desiredTools.has(value))) {
+      return "escalation";
+    }
+    const currentTools = new Set(
+      current.filter((value): value is string => typeof value === "string"),
+    );
+    return desired.some((value) => typeof value === "string" && !currentTools.has(value))
+      ? "reduction"
+      : "neutral";
   }
-  return path.startsWith("sandbox.") || path === "tools.allow" || current === undefined;
+  if (path === "tools.allow" && Array.isArray(current) && Array.isArray(desired)) {
+    const currentTools = new Set(
+      current.filter((value): value is string => typeof value === "string"),
+    );
+    return desired.some((value) => typeof value === "string" && !currentTools.has(value))
+      ? "escalation"
+      : "reduction";
+  }
+  return path.startsWith("sandbox.") || path === "tools.allow" || path.startsWith("heartbeat.")
+    ? "escalation"
+    : "neutral";
 }
 
-export function pushAgentCapabilityChanges(params: {
+function pushAgentCapabilityChanges(params: {
   changes: ClawUpdateCapabilityChange[];
   agentId: string;
   currentAgent: unknown;
   desiredAgent: unknown;
+  currentSandbox?: unknown;
+  desiredSandbox?: unknown;
+  currentHeartbeat?: unknown;
+  desiredHeartbeat?: unknown;
 }): void {
   const fields = [
     ["sandbox", "mode"],
@@ -69,36 +199,104 @@ export function pushAgentCapabilityChanges(params: {
     ["heartbeat", "timeoutSeconds"],
   ] as const;
   for (const field of fields) {
-    const current = getPath(params.currentAgent, field);
-    const desired = getPath(params.desiredAgent, field);
+    const sandboxField = field[0] === "sandbox" ? field.slice(1) : undefined;
+    const heartbeatField = field[0] === "heartbeat" ? field.slice(1) : undefined;
+    const current = sandboxField
+      ? getPath(params.currentSandbox, sandboxField)
+      : heartbeatField
+        ? getPath(params.currentHeartbeat, heartbeatField)
+        : getPath(params.currentAgent, field);
+    const desired = sandboxField
+      ? getPath(params.desiredSandbox, sandboxField)
+      : heartbeatField
+        ? getPath(params.desiredHeartbeat, heartbeatField)
+        : getPath(params.desiredAgent, field);
     if (sameValue(current, desired)) {
       continue;
     }
     const path = field.join(".");
-    const escalation = isAgentEscalation(path, current, desired);
+    const classification = classifyAgentCapability(
+      path,
+      current,
+      desired,
+      params.currentAgent !== undefined,
+    );
     params.changes.push({
       kind: "agent",
       id: params.agentId,
       path: `agent.${path}`,
       action: "change",
-      classification: escalation ? "escalation" : desired === undefined ? "reduction" : "neutral",
-      requiresDistinctConsent: escalation,
+      classification,
+      requiresDistinctConsent: classification === "escalation",
       reason: `Agent capability field ${path} changes in the target manifest.`,
-      ...(current === undefined ? {} : { current }),
-      ...(desired === undefined ? {} : { desired }),
+      ...(current === undefined
+        ? {}
+        : { current: capabilityValue(summarizeAgentCapability(current)) }),
+      ...(desired === undefined
+        ? {}
+        : { desired: capabilityValue(summarizeAgentCapability(desired)) }),
     });
   }
+}
+
+type AgentConfig = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[number];
+
+function resolveHeartbeat(config: OpenClawConfig, agentId: string): unknown {
+  const defaults = config.agents?.defaults?.heartbeat;
+  const overrides = config.agents?.list?.find((agent) => agent.id === agentId)?.heartbeat;
+  return {
+    ...defaults,
+    ...overrides,
+    every: resolveHeartbeatSummaryForAgent(config, agentId).every,
+  };
+}
+
+export function pushResolvedAgentCapabilityChanges(params: {
+  changes: ClawUpdateCapabilityChange[];
+  agentId: string;
+  config: OpenClawConfig;
+  desiredAgent: AgentConfig;
+}): void {
+  const currentAgents = params.config.agents?.list ?? [];
+  const currentIndex = currentAgents.findIndex((agent) => agent.id === params.agentId);
+  const currentAgent = currentIndex === -1 ? undefined : currentAgents[currentIndex];
+  const desiredAgents = [...currentAgents];
+  if (currentIndex === -1) {
+    desiredAgents.push(params.desiredAgent);
+  } else {
+    desiredAgents[currentIndex] = params.desiredAgent;
+  }
+  const desiredConfig: OpenClawConfig = {
+    ...params.config,
+    agents: {
+      ...params.config.agents,
+      list: desiredAgents,
+    },
+  };
+  pushAgentCapabilityChanges({
+    changes: params.changes,
+    agentId: params.agentId,
+    currentAgent,
+    desiredAgent: params.desiredAgent,
+    currentSandbox: currentAgent
+      ? resolveSandboxConfigForAgent(params.config, params.agentId)
+      : undefined,
+    desiredSandbox: resolveSandboxConfigForAgent(desiredConfig, params.agentId),
+    currentHeartbeat: currentAgent ? resolveHeartbeat(params.config, params.agentId) : undefined,
+    desiredHeartbeat: resolveHeartbeat(desiredConfig, params.agentId),
+  });
 }
 
 export function packageCapabilityChange(params: {
   pkg: { kind: string; ref: string; version: string };
   action: ClawUpdateCapabilityChange["action"];
   currentVersion?: string;
+  desiredVersion?: string;
 }): ClawUpdateCapabilityChange | undefined {
   if (params.pkg.kind !== "plugin" || params.action === "unchanged") {
     return undefined;
   }
-  const reduction = params.action === "remove" || params.action === "release";
+  const reduction = params.desiredVersion === undefined;
   return {
     kind: "package",
     id: `plugin:${params.pkg.ref}`,
@@ -109,34 +307,42 @@ export function packageCapabilityChange(params: {
     reason: reduction
       ? "Target manifest removes or releases plugin executable code."
       : "Target manifest adds or changes plugin executable code.",
-    ...(params.currentVersion ? { current: { version: params.currentVersion } } : {}),
-    desired: { version: params.pkg.version },
+    ...(params.currentVersion
+      ? {
+          current: capabilityValue(`version ${params.currentVersion}`),
+        }
+      : {}),
+    ...(params.desiredVersion
+      ? {
+          desired: capabilityValue(`version ${params.desiredVersion}`),
+        }
+      : {}),
   };
 }
 
-function safeMcpCapability(server: unknown): Record<string, unknown> | undefined {
+function summarizeMcpCapability(server: unknown): string {
   if (!server || typeof server !== "object") {
-    return undefined;
+    return "not configured";
   }
   const value = server as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-  for (const key of ["transport", "auth", "toolFilter", "timeout", "connectTimeout"]) {
-    if (value[key] !== undefined) {
-      result[key] = value[key];
-    }
-  }
+  const summary: string[] = [];
   if (typeof value.command === "string") {
-    result.command = value.command;
-    result.argsCount = Array.isArray(value.args) ? value.args.length : 0;
+    summary.push(`local process (${Array.isArray(value.args) ? value.args.length : 0} args)`);
+  } else if (typeof value.url === "string") {
+    summary.push("remote server");
+  } else {
+    summary.push("configured server");
   }
-  if (typeof value.url === "string") {
-    try {
-      result.urlOrigin = new URL(value.url).origin;
-    } catch {
-      result.urlOrigin = "invalid-url";
-    }
+  if (value.auth !== undefined) {
+    summary.push("auth configured");
   }
-  return Object.keys(result).length > 0 ? result : undefined;
+  if (value.toolFilter !== undefined) {
+    summary.push("tool filter configured");
+  }
+  if (value.env && typeof value.env === "object") {
+    summary.push(`${Object.keys(value.env).length} env entries`);
+  }
+  return summary.join("; ");
 }
 
 export function mcpCapabilityChange(params: {
@@ -148,7 +354,7 @@ export function mcpCapabilityChange(params: {
   if (params.action === "unchanged") {
     return undefined;
   }
-  const reduction = params.action === "remove" || params.action === "release";
+  const reduction = params.desired === undefined;
   return {
     kind: "mcpServer",
     id: params.id,
@@ -159,9 +365,29 @@ export function mcpCapabilityChange(params: {
     reason: reduction
       ? "Target manifest removes or releases an MCP tool surface."
       : "Target manifest adds, restores, or changes an MCP tool surface.",
-    ...(params.current ? { current: safeMcpCapability(params.current) } : {}),
-    ...(params.desired ? { desired: safeMcpCapability(params.desired) } : {}),
+    ...(params.current === undefined
+      ? {}
+      : {
+          current: capabilityValue(summarizeMcpCapability(params.current)),
+        }),
+    ...(params.desired === undefined
+      ? {}
+      : {
+          desired: capabilityValue(summarizeMcpCapability(params.desired)),
+        }),
   };
+}
+
+function summarizeCronCapability(cron: unknown): string {
+  if (!cron || typeof cron !== "object") {
+    return "not configured";
+  }
+  const value = cron as Record<string, unknown>;
+  const schedule = value.schedule as Record<string, unknown> | undefined;
+  const scheduleKind = schedule
+    ? (Object.keys(schedule).find((key) => key !== "timezone") ?? "configured")
+    : "configured";
+  return `schedule ${scheduleKind}; session ${typeof value.session === "string" ? value.session : "default"}; payload withheld`;
 }
 
 export function cronCapabilityChange(params: {
@@ -173,7 +399,7 @@ export function cronCapabilityChange(params: {
   if (params.action === "unchanged") {
     return undefined;
   }
-  const reduction = params.action === "remove";
+  const reduction = params.desired === undefined;
   return {
     kind: "cronJob",
     id: params.id,
@@ -184,7 +410,15 @@ export function cronCapabilityChange(params: {
     reason: reduction
       ? "Target manifest removes a scheduled automation."
       : "Target manifest adds, restores, or changes a scheduled automation.",
-    ...(params.current ? { current: params.current } : {}),
-    ...(params.desired ? { desired: params.desired } : {}),
+    ...(params.current === undefined
+      ? {}
+      : {
+          current: capabilityValue(summarizeCronCapability(params.current)),
+        }),
+    ...(params.desired === undefined
+      ? {}
+      : {
+          desired: capabilityValue(summarizeCronCapability(params.desired)),
+        }),
   };
 }

@@ -35,7 +35,6 @@ import {
   CLAW_UPDATE_PLAN_SCHEMA_VERSION,
   type ClawUpdatePlan,
 } from "../claws/update-plan.js";
-import { agentsDeleteCommand } from "../commands/agents.commands.delete.js";
 // Runtime handlers for experimental local Claws commands.
 import { getRuntimeConfig } from "../config/config.js";
 import { listConfiguredMcpServers } from "../config/mcp-config.js";
@@ -44,12 +43,7 @@ import {
   loadCronJobsStoreWithConfigJobsReadOnly,
   resolveCronJobsStorePath,
 } from "../cron/store.js";
-import {
-  defaultRuntime,
-  writeRuntimeJson,
-  type OutputRuntimeEnv,
-  type RuntimeEnv,
-} from "../runtime.js";
+import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import { openExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db.js";
 import type {
   ClawsAddOptions,
@@ -403,16 +397,6 @@ export async function runClawsStatusCommand(
   }
 }
 
-function formatCapabilityValue(value: unknown): string {
-  if (value === undefined) {
-    return "unset";
-  }
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return JSON.stringify(value);
-}
-
 function logClawUpdatePlanSummary(plan: ClawUpdatePlan, runtime: RuntimeEnv): void {
   runtime.log(`Agent: ${plan.agentId}`);
   runtime.log(`Update actions: ${plan.summary.totalActions}`);
@@ -423,8 +407,8 @@ function logClawUpdatePlanSummary(plan: ClawUpdatePlan, runtime: RuntimeEnv): vo
     `Capability changes: ${plan.summary.capabilityChanges}; escalations requiring distinct consent: ${plan.summary.capabilityEscalations}`,
   );
   for (const change of plan.capabilityChanges) {
-    const current = formatCapabilityValue(change.current);
-    const desired = formatCapabilityValue(change.desired);
+    const current = change.current?.summary ?? "unset";
+    const desired = change.desired?.summary ?? "unset";
     runtime.log(
       `  ${change.requiresDistinctConsent ? "!" : "-"} ${change.path}: ${current} -> ${desired} (${change.action})`,
     );
