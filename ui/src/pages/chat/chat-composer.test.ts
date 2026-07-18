@@ -63,7 +63,7 @@ function questionPrompt(id: string, question: string): QuestionPrompt {
     id,
     questions: [
       {
-        id: "choice",
+        questionId: "choice",
         header: "Choice",
         question,
         options: [{ label: "Yes" }, { label: "No" }],
