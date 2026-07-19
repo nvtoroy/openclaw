@@ -276,7 +276,9 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +3: bounded visible transcript cursor request, result, and reader.
       // +1: explicit AgentModelPolicyConfig shared with provider setup surfaces.
       // +1: AgentHarnessSessionSupersededError lets harness plugins stop stale-owner fallback.
-      8167,
+      // +3: harness sessionFork capability params, result, and failure-code contracts.
+      // +2: upstream-link registry write/delete for harness-owned session forks.
+      8172,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -320,7 +322,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: shared persistent-dedupe claim loop.
       // +1: bounded raw transcript cursor reader.
       // +1: bounded visible transcript cursor reader.
-      4543,
+      // +2: upstream-link registry write/delete for harness-owned session forks.
+      4545,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
