@@ -34,6 +34,7 @@ import {
   deleteMaterializedSqliteSessionStatePlans,
   deletePlannedSqliteLifecycleArtifactEntries,
   planSqliteSessionLifecycleArtifactCleanup,
+  planSqliteSessionStateAfterKeyRemoval,
   planSqliteSessionStateAfterEntryRemoval,
   readReferencedSqliteSessionIdsAfterTargetMutation,
 } from "./session-accessor.sqlite-lifecycle-state.js";
@@ -113,28 +114,12 @@ export async function resetSqliteSessionEntryLifecycle(
       ...(current?.entry.sessionFile ? { previousSessionFile: current.entry.sessionFile } : {}),
       ...(current?.entry.sessionId ? { previousSessionId: current.entry.sessionId } : {}),
     };
-    let archivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
-    const referencedAfterReset = current?.entry.sessionId
-      ? readReferencedSqliteSessionIdsAfterTargetMutation(database, params.target, nextEntry)
-      : new Set<string>();
-    const deletePlans = current?.entry.sessionId
-      ? planSqliteSessionStateAfterEntryRemoval({
-          archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
-          database,
-          entry: current.entry,
-          reason: "reset",
-          referencedSessionIds: referencedAfterReset,
-        })
-      : [];
-    const materializedPlans = materializeSqliteSessionStateDeletePlans(deletePlans);
     runOpenClawAgentWriteTransaction((transactionDb) => {
       assertSqliteLifecycleTargetUnchanged(transactionDb, params.target, current?.entry, "reset");
       deleteSqliteLifecycleTargetRows(transactionDb, params.target);
       writeSessionEntry(transactionDb, params.target.canonicalKey, nextEntry);
-      archivedTranscripts = deleteMaterializedSqliteSessionStatePlans(
-        transactionDb,
-        materializedPlans,
-      );
+      // Reset only advances the live entry and route. Historical rows stay searchable;
+      // disk-budget cleanup owns durable extraction before reclaiming them.
     }, toDatabaseOptions(resolved));
     if (current) {
       emitSessionIdentityMutation({
@@ -159,10 +144,9 @@ export async function resetSqliteSessionEntryLifecycle(
       });
     }
     await params.afterEntryMutation?.(mutation);
-    emitArchivedSqliteTranscriptUpdates(archivedTranscripts);
     return {
       ...mutation,
-      archivedTranscripts,
+      archivedTranscripts: [],
     };
   });
 }
@@ -205,17 +189,30 @@ async function deleteSqliteSessionEntryLifecycleInternal(
     );
     // SQLite transcript state is keyed by session id; sessionFile is only its
     // marker. Materialization dedupes aliases that share the same state owner.
+    const archiveDirectory = resolveSqliteTranscriptArchiveDirectory(resolved);
     const deletePlans = params.archiveTranscript
-      ? targetSnapshot.rows.flatMap(({ entry }) =>
-          planSqliteSessionStateAfterEntryRemoval({
+      ? [
+          ...targetSnapshot.rows.flatMap(({ entry }) =>
+            planSqliteSessionStateAfterEntryRemoval({
+              archiveDirectory,
+              archiveTranscript: true,
+              database,
+              entry,
+              reason: "deleted",
+              referencedSessionIds: referencedAfterDelete,
+            }),
+          ),
+          ...planSqliteSessionStateAfterKeyRemoval({
             archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
-            archiveTranscript: true,
             database,
-            entry,
-            reason: "deleted",
             referencedSessionIds: referencedAfterDelete,
+            sessionKeys: [
+              params.target.canonicalKey,
+              ...params.target.storeKeys,
+              ...targetSnapshot.rows.map((row) => row.sessionKey),
+            ],
           }),
-        )
+        ]
       : [];
     const materializedPlans = materializeSqliteSessionStateDeletePlans(deletePlans);
     runOpenClawAgentWriteTransaction((transactionDb) => {

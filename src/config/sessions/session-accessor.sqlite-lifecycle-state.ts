@@ -116,7 +116,8 @@ function sqliteTranscriptStateHasMarker(params: {
   return rows.some((row) => row.event_json.includes(params.transcriptContentMarker));
 }
 
-function readReferencedSqliteSessionIds(database: OpenClawAgentDatabase): Set<string> {
+/** Session ids protected by live entry state or durable route targets. */
+export function readReferencedSqliteSessionIds(database: OpenClawAgentDatabase): Set<string> {
   const db = getSessionKysely(database.db);
   const rows = executeSqliteQuerySync(
     database.db,
@@ -132,6 +133,13 @@ function readReferencedSqliteSessionIds(database: OpenClawAgentDatabase): Set<st
     for (const sessionId of collectSqliteSessionStateIdsForEntry(entry)) {
       sessionIds.add(sessionId);
     }
+  }
+  const routeRows = executeSqliteQuerySync(
+    database.db,
+    db.selectFrom("session_routes").select("session_id"),
+  ).rows;
+  for (const row of routeRows) {
+    sessionIds.add(row.session_id);
   }
   return sessionIds;
 }
@@ -163,6 +171,15 @@ export function readReferencedSqliteSessionIdsAfterTargetMutation(
     }
     for (const sessionId of collectSqliteSessionStateIdsForEntry(entry)) {
       sessionIds.add(sessionId);
+    }
+  }
+  const routeRows = executeSqliteQuerySync(
+    database.db,
+    db.selectFrom("session_routes").select(["session_id", "session_key"]),
+  ).rows;
+  for (const row of routeRows) {
+    if (!removedKeys.has(row.session_key)) {
+      sessionIds.add(row.session_id);
     }
   }
   if (nextEntry) {
@@ -214,9 +231,13 @@ export function planSqliteSessionStateDeleteIfUnreferenced(params: {
 export function deleteMaterializedSqliteSessionStatePlans(
   database: OpenClawAgentDatabase,
   plans: readonly MaterializedSqliteSessionStateDeletePlan[],
+  protectedSessionIds?: ReadonlySet<string>,
 ): SessionLifecycleArchivedTranscript[] {
   const archivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
   const referencedSessionIds = readReferencedSqliteSessionIds(database);
+  for (const sessionId of protectedSessionIds ?? []) {
+    referencedSessionIds.add(sessionId);
+  }
   for (const plan of plans) {
     if (referencedSessionIds.has(plan.sessionId)) {
       continue;
@@ -264,6 +285,35 @@ export function planSqliteSessionStateAfterEntryRemoval(params: {
     }
   }
   return plans;
+}
+
+/** Plans every persisted generation owned by the deleted logical session keys. */
+export function planSqliteSessionStateAfterKeyRemoval(params: {
+  archiveDirectory: string;
+  database: OpenClawAgentDatabase;
+  referencedSessionIds: ReadonlySet<string>;
+  sessionKeys: Iterable<string>;
+}): SqliteSessionStateDeletePlan[] {
+  const sessionKeys = uniqueStrings([...params.sessionKeys].map((key) => key.trim()));
+  if (sessionKeys.length === 0) {
+    return [];
+  }
+  const db = getSessionKysely(params.database.db);
+  const rows = executeSqliteQuerySync(
+    params.database.db,
+    db.selectFrom("sessions").select("session_id").where("session_key", "in", sessionKeys),
+  ).rows;
+  return rows.flatMap((row) => {
+    const plan = planSqliteSessionStateDeleteIfUnreferenced({
+      archiveDirectory: params.archiveDirectory,
+      archiveTranscript: true,
+      database: params.database,
+      reason: "deleted",
+      referencedSessionIds: params.referencedSessionIds,
+      sessionId: row.session_id,
+    });
+    return plan ? [plan] : [];
+  });
 }
 
 // Projects removals and upserts before archive materialization so same-call

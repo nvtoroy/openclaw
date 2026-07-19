@@ -105,6 +105,10 @@ function writeSqliteTranscriptArchive(params: {
       writeDurableFileExclusive(tempPath, encoded.bytes);
       fs.renameSync(tempPath, archivePath);
       fsyncDirectory(params.archiveDirectory);
+      if (readSessionArchiveContentSync(archivePath) !== params.content) {
+        fs.rmSync(archivePath, { force: true });
+        throw new Error(`SQLite transcript archive verification failed for ${params.sessionId}`);
+      }
       return archivePath;
     } catch (error) {
       fs.rmSync(tempPath, { force: true });
@@ -149,18 +153,17 @@ export function materializeSqliteSessionStateDeletePlans(
   plans: readonly SqliteSessionStateDeletePlan[],
 ): MaterializedSqliteSessionStateDeletePlan[] {
   return dedupeSqliteSessionStateDeletePlans(plans).map((plan) => {
-    const archivedTranscript =
-      plan.archiveTranscript && plan.content.length > 0
-        ? {
-            archivedPath: writeSqliteTranscriptArchive({
-              archiveDirectory: plan.archiveDirectory,
-              content: plan.content,
-              reason: plan.reason,
-              sessionId: plan.sessionId,
-            }),
-            sourcePath: path.join(plan.archiveDirectory, `${plan.sessionId}.jsonl`),
-          }
-        : null;
+    const archivedTranscript = plan.archiveTranscript
+      ? {
+          archivedPath: writeSqliteTranscriptArchive({
+            archiveDirectory: plan.archiveDirectory,
+            content: plan.content,
+            reason: plan.reason,
+            sessionId: plan.sessionId,
+          }),
+          sourcePath: path.join(plan.archiveDirectory, `${plan.sessionId}.jsonl`),
+        }
+      : null;
     return Object.assign({}, plan, { archivedTranscript });
   });
 }
