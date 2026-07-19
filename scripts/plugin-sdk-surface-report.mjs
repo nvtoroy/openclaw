@@ -269,7 +269,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: centralized remember-across-conversations effective-default resolver.
       // +4: gateway-backed harness question runner, claim/cancel helpers, and caller type.
       // Harvest: internal question runtime exports -2.
-      8157,
+      // +1: config-backed main-session resolver for Gateway-hosted plugin services.
+      8158,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -309,7 +310,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: centralized remember-across-conversations effective-default resolver.
       // +3: gateway-backed harness question runner and claim/cancel helpers.
       // Harvest: internal question runtime callable -1.
-      4539,
+      // +1: config-backed main-session resolver for Gateway-hosted plugin services.
+      4540,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
