@@ -1231,7 +1231,10 @@ export function handleToolExecutionStart(
             return ctx.params.onToolResult?.(
               buildAgentHarnessQuestionPromptPayload({
                 questionId,
-                questions,
+                questions: questions.map(({ questionId: id, ...question }) => ({
+                  ...question,
+                  id,
+                })),
                 options: { intro: "Question for you:" },
               }),
             );

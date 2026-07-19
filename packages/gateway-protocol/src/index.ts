@@ -117,7 +117,6 @@ import {
   ChatEventSchema,
   ChatHistoryParamsSchema,
   ChatMetadataParamsSchema,
-  ChatMessageGetResultSchema,
   ChatMessageGetParamsSchema,
   ChatInjectParamsSchema,
   ChatSendParamsSchema,

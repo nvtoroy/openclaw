@@ -280,7 +280,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: AgentThinkingLevel shared by default-turn and compaction config.
       // +9: shared ingress monitor factory and lifecycle/result contracts across
       // channel-outbound and its two deprecated compatibility barrels.
-      8177,
+      // Net +1: public session catalog locator types after the protocol cleanup harvest.
+      8178,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
